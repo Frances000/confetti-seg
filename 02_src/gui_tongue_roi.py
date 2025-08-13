@@ -10,6 +10,7 @@ import random
 from matplotlib.widgets import RectangleSelector
 import glob
 import itertools
+import time
 
 PATCH_WIDTH = 100
 PATCH_HEIGHT = 200
@@ -152,19 +153,26 @@ def generate_channel_masks(shape, tile_size):
     return masks
 
 def adjust_to_ratio(patch, peak_mask, trough_mask, target_ratio=1.8):
-    # Bettega defined the target ratio to be 1.8
-    # thus we want to find the additive bias such that (peak_mean + b)\(trough_mean+b) = 1,8
-    # TODO: CHECK THIS LATER!! b = (1.8*(trough - peak))/-0.8 ??
     patch = patch.astype(np.float32)
     peak_mean = compute_mean_intensity(patch, peak_mask)
     trough_mean = compute_mean_intensity(patch, trough_mask)
+    # print(f"trough_mean: {trough_mean}, peak_mean: {peak_mean}")
     if trough_mean == 0:
         return patch.astype(np.uint8)
     b = (target_ratio * trough_mean - peak_mean) / (1 - target_ratio)
-    # now we add the bias to each pixel
-    adjusted = np.clip(patch + b, 0, 255).astype(np.uint8)
+    adjusted = patch + b
+    # Rescale to full [0,255] range
+    min_val = adjusted.min()
+    max_val = adjusted.max()
+    if min_val != max_val:  
+        # avoid division by zero
+        adjusted = (adjusted - min_val) * (255.0 / (max_val - min_val))
+    else:
+        adjusted.fill(0)  
+        # black background value
+    adjusted = adjusted.astype(np.uint8)
+    # print(f"adjusted patch:\n{adjusted}")
     return adjusted
-
 
 def make_random_allele_grid(shape, tile_size=TILE_SIZE):
     H, W = shape
@@ -253,6 +261,7 @@ def build_channel_overlay(mask, rgb_triplet, half_inten=127, full_inten=255):
     return ov
 
 def sample_and_show_pseudoimages(image, regions):
+    start_time = time.time()
     os.makedirs("output", exist_ok=True)
     for idx, (xmin, ymin, xmax, ymax) in enumerate(regions):
         lbl = LABELS[idx]
@@ -300,6 +309,9 @@ def sample_and_show_pseudoimages(image, regions):
             axs[idx, j].axis("off")
 
     plt.tight_layout()
+    end_time = time.time()
+    elapsed = end_time - start_time
+    print(f"Image generation complete in {elapsed:.2f} seconds.")
     plt.suptitle("Pseudoimages with channel-wise Confetti allele simulation", y=1.02)
     plt.show()
 
@@ -338,7 +350,6 @@ def main():
     if len(regions) != 3:
         print("Exactly 3 regions must be selected.")
         return
-    
     sample_and_show_pseudoimages(img, regions)
 
 if __name__ == "__main__":
