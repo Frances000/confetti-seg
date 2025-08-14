@@ -12,19 +12,29 @@ import glob
 import itertools
 import time
 
+# ---------------------------
+# Constants for configuration 
+# ---------------------------
+
+# Dimensions for sample (pixels), currently following Bettega's previously defined region size
 PATCH_WIDTH = 100
 PATCH_HEIGHT = 200
+# Confetti allele code: red, yellow, green, cyan, black
 ALLELES = ["R", "Y", "G", "C", "B"]
+# All possible heterzygous and homozygous allele pairs 
 PAIR_CODES = list(itertools.combinations_with_replacement(ALLELES, 2))
+# Assignment of weights - 1 for homozygosity, 2 for heterozygosity
 PAIR_WEIGHTS = np.array([1 if a == b else 2 for (a, b) in PAIR_CODES], dtype=float)
 PAIR_WEIGHTS /= PAIR_WEIGHTS.sum()
-# Variable - currently following Bettega's previously defined region size
+# Number of randomly allocated patches
 NUM_PATCHES_PER_REGION = 5
-# currently testing on 5
+# Region labels
 LABELS = ["filiform", "foliate_L", "foliate_R"]
-TILE_SIZE = 20  # size of coloured sub-tiles within each patch
+# size of coloured sub-tiles within each patch - square
+TILE_SIZE = 20  
 TARGET_RATIO = 1.8
 CHANNELS = ["R", "Y", "G", "C"]
+# RGB mapping for channels
 CHANNEL_RGB = {
     "R": (255, 0,   0),
     "Y": (255, 255, 0),
@@ -32,8 +42,12 @@ CHANNEL_RGB = {
     "C": (0,   255, 255),
 }
 
-# File selection GUI, currently drag and drop for singular, can be extended later
+# ----------------------------
+# File selection and ROI input
+# ----------------------------
+
 def choose_image():
+    # open file dialogue, returns path to selected image
     root = tk.Tk()
     root.withdraw()
     file_path = filedialog.askopenfilename(
@@ -43,15 +57,17 @@ def choose_image():
     )
     return file_path
 
-# GUI-based drag-to-select using RectangleSelector
 def select_regions(image):
+    # GUI-based drag-to-select using RectangleSelector
+    # input grayscale image (ndarray) and output selections as a list of tuples
+    # tuple form: (xmin, ymin, xmax, ymax)
     fig, ax = plt.subplots()
     ax.imshow(image, cmap='gray')
     ax.set_title("Select 3 rectangular ROIs - front (filiform), left & right (foliate)")
-    
     selections = []
     
     def onselect(eclick, erelease):
+        # Convert click/release coordinates to integers and order correctly
         x1, y1 = int(eclick.xdata), int(eclick.ydata)
         x2, y2 = int(erelease.xdata), int(erelease.ydata)
         xmin, xmax = sorted([x1, x2])
@@ -63,22 +79,23 @@ def select_regions(image):
         ax.add_patch(rect)
         fig.canvas.draw()
         if len(selections) >= 3:
+            # after selecting three regions, close the selector
             plt.close()
-
     selector = RectangleSelector(ax, onselect, useblit=True,
                                   button=[1],  
                                   interactive=True)
     plt.show()
     return selections
 
-# randomised selection of [X] 100×200 patches from within ROI
-# def sample_and_save_patches(image, region_coords, output_base="output"):
+# ----------------------------
+# ROI and patch processing
+# ----------------------------
 from skimage.draw import disk
 from skimage.measure import regionprops, label
 from skimage.feature import peak_local_max
 
 def get_circular_roi_mask(image_shape, centers, radius):
-    # create boolean mask 
+    # create boolean mask with filled circles at given coordinates
     mask = np.zeros(image_shape, dtype=bool)
     for cy, cx in centers:
         rr, cc = disk((cy, cx), radius, shape=image_shape)
