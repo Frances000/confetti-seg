@@ -176,13 +176,17 @@ def process_image(img_path: Path, out_dir: Path, channel_tag: str, pct_top: floa
         base_labels.append(f"{channel_tag}_{fname}")
 
     # For each base plane, add two thresholded variants (Otsu and Percentile-14%)
+    # separate storage of base and thresholded
+    original_planes: list[np.ndarray] = []
+    original_labels: list[str] = []
+    # thresholded
     planes: list[np.ndarray] = []
     labels: list[str] = []
 
     for lbl, img in zip(base_labels, base_planes):
         # keep original plane
-        planes.append(img.astype(np.uint8))
-        labels.append(lbl)
+        original_planes.append(img.astype(np.uint8))
+        original_labels.append(lbl)
         # Otsu
         planes.append(otsu_binary(img))
         labels.append(f"{lbl}_Otsu")
@@ -190,7 +194,26 @@ def process_image(img_path: Path, out_dir: Path, channel_tag: str, pct_top: floa
         planes.append(percentile_binary(img, pct_top=pct_top))
         labels.append(f"{lbl}_Pctl{int(pct_top)}")
 
-    stack = np.stack(planes, axis=0)  # (Z, H, W) uint8
+    # (Z, H, W) uint8
+    # write base first
+    base_stack = np.stack(original_planes, axis=0)
+    base_out_dir = out_dir / "base"
+    base_out_dir.mkdir(parents=True, exist_ok=True)
+    base_out_name = f"{img_path.stem}_Feature-stack0001.tif"
+    base_out_path = base_out_dir / base_out_name
+    imwrite(
+        str(base_out_path),
+        base_stack,
+        photometric="minisblack",
+        metadata={"axes": "Z", "ImageDescription": "Base feature stack"},
+        description="Feature stack with thresholds",
+        contiguous=True,
+    )
+    with open(base_out_dir / f"{img_path.stem}_Feature-stack0001_labels.txt", "w") as f:
+        for i, tag in enumerate(base_labels, 1):
+            f.write(f"{i:03d}: {tag}\n")
+
+    stack = np.stack(planes, axis=0)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_name = f"{img_path.stem}_Feature-stack0001.tif"
     out_path = out_dir / out_name
