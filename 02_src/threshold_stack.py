@@ -10,7 +10,7 @@ from skimage.filters import gabor, sobel_h, sobel_v
 from skimage.filters.rank import entropy
 from skimage.filters import scharr_h, scharr_v, prewitt_h, prewitt_v
 from skimage.filters import gaussian, laplace
-from skimage.morphology import disk
+from skimage.morphology import disk, skeletonize
 
 def read_image_u8(path: Path) -> np.ndarray:
     # Read image as single-channel uint8 (no RGB mixing).
@@ -65,6 +65,24 @@ def percentile_binary(u8: np.ndarray, pct_top: float = 14.0) -> np.ndarray:
     thr_val = float(np.percentile(u8, 100.0 - pct_top))
     mask = (u8 >= thr_val).astype(np.uint8) * 255
     return mask
+
+# -----------------------------
+# Distance map helper
+# -----------------------------
+
+def _dm_from_binary(mask_u8: np.ndarray) -> np.ndarray:
+    # Distance to foreground (target set) like the IJ macro:
+    #   invert mask so target (255) -> 0
+    #   distanceTransform gives distance to nearest zero (i.e., to target)
+    #   normalise to 0..255 for compact storage
+    inv = cv2.bitwise_not(mask_u8)
+    dist = cv2.distanceTransform(inv, distanceType=cv2.DIST_L2, maskSize=5)
+    return _u8_unit(_float_norm(dist))
+
+def _skeletonize_u8(mask_u8: np.ndarray) -> np.ndarray:
+    bin01 = (mask_u8 > 0)
+    skel = skeletonize(bin01)
+    return (skel.astype(np.uint8) * 255)
 
 # -----------------------------
 # Feature stack (approx TWS)
@@ -175,43 +193,86 @@ def process_image(img_path: Path, out_dir: Path, channel_tag: str, pct_top: floa
         base_planes.append(fimg)
         base_labels.append(f"{channel_tag}_{fname}")
 
-    # For each base plane, add two thresholded variants (Otsu and Percentile-14%)
-    # separate storage of base and thresholded
-    original_planes: list[np.ndarray] = []
-    original_labels: list[str] = []
-    # thresholded
+    # Output planes & labels
     planes: list[np.ndarray] = []
     labels: list[str] = []
 
     for lbl, img in zip(base_labels, base_planes):
-        # keep original plane
-        original_planes.append(img.astype(np.uint8))
-        original_labels.append(lbl)
-        # Otsu
-        planes.append(otsu_binary(img))
-        labels.append(f"{lbl}_Otsu")
-        # Percentile top-14%
-        planes.append(percentile_binary(img, pct_top=pct_top))
-        labels.append(f"{lbl}_Pctl{int(pct_top)}")
+        img_u8 = img.astype(np.uint8)
 
-    # (Z, H, W) uint8
-    # write base first
-    base_stack = np.stack(original_planes, axis=0)
-    base_out_dir = out_dir / "base"
-    base_out_dir.mkdir(parents=True, exist_ok=True)
-    base_out_name = f"{img_path.stem}_Feature-stack0001.tif"
-    base_out_path = base_out_dir / base_out_name
-    imwrite(
-        str(base_out_path),
-        base_stack,
-        photometric="minisblack",
-        metadata={"axes": "Z", "ImageDescription": "Base feature stack"},
-        description="Feature stack with thresholds",
-        contiguous=True,
-    )
-    with open(base_out_dir / f"{img_path.stem}_Feature-stack0001_labels.txt", "w") as f:
-        for i, tag in enumerate(base_labels, 1):
-            f.write(f"{i:03d}: {tag}\n")
+        # 1) keep the base plane
+        planes.append(img_u8)
+        labels.append(lbl)
+
+        # 2) make three binary planes (non-base)
+        mask_p14 = percentile_binary(img_u8, pct_top=pct_top)
+        mask_p50 = percentile_binary(img_u8, pct_top=50.0)
+        mask_ots = otsu_binary(img_u8)
+
+        planes.extend([mask_p14, mask_p50, mask_ots])
+        labels.extend([f"{lbl}_Pctl{int(round(pct_top))}",
+                       f"{lbl}_Pctl50",
+                       f"{lbl}_Otsu"])
+
+        # 3) create distance maps *only from those binaries*
+        #    (thresh-only and skeleton versions)
+        dm_p14   = _dm_from_binary(mask_p14)
+        dm_p50   = _dm_from_binary(mask_p50)
+        dm_ots   = _dm_from_binary(mask_ots)
+
+        sk_p14   = _skeletonize_u8(mask_p14)
+        sk_p50   = _skeletonize_u8(mask_p50)
+        sk_ots   = _skeletonize_u8(mask_ots)
+
+        dm_sk_p14 = _dm_from_binary(sk_p14)
+        dm_sk_p50 = _dm_from_binary(sk_p50)
+        dm_sk_ots = _dm_from_binary(sk_ots)
+
+        planes.extend([dm_p14, dm_p50, dm_ots, dm_sk_p14, dm_sk_p50, dm_sk_ots])
+        labels.extend([f"DM14pcThresh_{lbl}",
+                       f"DM50pcThresh_{lbl}",
+                       f"DMotsuThresh_{lbl}",
+                       f"DM14pcSkel_{lbl}",
+                       f"DM50pcSkel_{lbl}",
+                       f"DMotsuSkel_{lbl}"])
+
+    # # For each base plane, add two thresholded variants (Otsu and Percentile-14%)
+    # # separate storage of base and thresholded
+    # original_planes: list[np.ndarray] = []
+    # original_labels: list[str] = []
+    # # thresholded
+    # planes: list[np.ndarray] = []
+    # labels: list[str] = []
+
+    # for lbl, img in zip(base_labels, base_planes):
+    #     # keep original plane
+    #     original_planes.append(img.astype(np.uint8))
+    #     original_labels.append(lbl)
+    #     # Otsu
+    #     planes.append(otsu_binary(img))
+    #     labels.append(f"{lbl}_Otsu")
+    #     # Percentile top-14%
+    #     planes.append(percentile_binary(img, pct_top=pct_top))
+    #     labels.append(f"{lbl}_Pctl{int(pct_top)}")
+
+    # # (Z, H, W) uint8
+    # # write base first
+    # base_stack = np.stack(original_planes, axis=0)
+    # base_out_dir = out_dir / "base"
+    # base_out_dir.mkdir(parents=True, exist_ok=True)
+    # base_out_name = f"{img_path.stem}_Feature-stack0001.tif"
+    # base_out_path = base_out_dir / base_out_name
+    # imwrite(
+    #     str(base_out_path),
+    #     base_stack,
+    #     photometric="minisblack",
+    #     metadata={"axes": "Z", "ImageDescription": "Base feature stack"},
+    #     description="Feature stack with thresholds",
+    #     contiguous=True,
+    # )
+    # with open(base_out_dir / f"{img_path.stem}_Feature-stack0001_labels.txt", "w") as f:
+    #     for i, tag in enumerate(base_labels, 1):
+    #         f.write(f"{i:03d}: {tag}\n")
 
     stack = np.stack(planes, axis=0)
     out_dir.mkdir(parents=True, exist_ok=True)
