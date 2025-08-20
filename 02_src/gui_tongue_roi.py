@@ -41,6 +41,10 @@ CHANNEL_RGB = {
     "G": (0,   255, 0),
     "C": (0,   255, 255),
 }
+# Intensity (0–255) for green stipple dots
+GREEN_DOT_INTENSITY_SINGLE = 177  # one green allele (Gx)
+GREEN_DOT_INTENSITY_DOUBLE = 255  # two green alleles (GG)
+
 
 # ----------------------------
 # File selection and ROI input
@@ -191,19 +195,23 @@ def adjust_to_ratio(patch, peak_mask, trough_mask, target_ratio=1.8):
     # print(f"adjusted patch:\n{adjusted}")
     return adjusted
 
-def make_random_allele_grid(shape, tile_size=TILE_SIZE):
-    H, W = shape
-    rows, cols = H // tile_size, W // tile_size
-    codes = ["B","R","Y","RR","RY","YY"]
-    layout = np.random.choice(codes, (rows, cols))
-    cmap = {"B":0,"R":1,"Y":2,"RR":2,"RY":1,"YY":2}
-    mask = np.zeros((H, W), int)
-    for r in range(rows):
-        for c in range(cols):
-            val = cmap[layout[r, c]]
-            y0, x0 = r*tile_size, c*tile_size
-            mask[y0:y0+tile_size, x0:x0+tile_size] = val
-    return mask
+def composite_overlay_black_bg_tile(patch, ov, mask, alpha=0.5):
+    # Overlay colour onto brightfield only where mask > 0, black elsewhere.
+    # `mask` is the integer allele mask for this channel
+    # must be RGB brightfield
+    if patch.ndim == 2:
+        base = np.stack([patch]*3, axis=-1)
+    else:
+        base = patch.copy()
+    # boolean mask: all pixels in relevant tiles
+    mask2d = mask > 0
+
+    blended = (alpha * ov + (1 - alpha) * base).astype(np.uint8)
+
+    # black background outside mask
+    result = np.zeros_like(base)
+    result[mask2d] = blended[mask2d]
+    return result
 
 def code_to_overlay(mask, color):
     H, W = mask.shape
@@ -214,43 +222,48 @@ def code_to_overlay(mask, color):
 
 def add_stippling_green(gt, ov, dots_per_tile=20, jitter=0.25):
 
+    # Add 1px-ish green stipple dots whose brightness encodes allele dosage:
+    #   mask==1 -> GREEN_DOT_INTENSITY_SINGLE
+    #   mask==2 -> GREEN_DOT_INTENSITY_DOUBLE
+    # The incoming ov is the colour overlay; we zero its green fill per-tile
+    # and then paint dots at the desired intensity.
     im = ov.copy()
     H, W = gt.shape
     rows, cols = H // TILE_SIZE, W // TILE_SIZE
-
-    # choose a near-square grid
+    # choose a near-square grid for dot placement cells
     if dots_per_tile == 20:
         gy, gx = 4, 5
     else:
         gy = max(1, int(np.floor(np.sqrt(dots_per_tile))))
         gx = int(np.ceil(dots_per_tile / gy))
-
     for r_idx in range(rows):
         for c_idx in range(cols):
-            if gt[r_idx * TILE_SIZE, c_idx * TILE_SIZE] > 0:
-                y0, x0 = r_idx * TILE_SIZE, c_idx * TILE_SIZE
-
-                # clear green fill in tile so only stipples remain
-                im[y0:y0 + TILE_SIZE, x0:x0 + TILE_SIZE, 1] = 0
-
-                cell_h = TILE_SIZE / gy
-                cell_w = TILE_SIZE / gx
-                count = 0
-                for i in range(gy):
-                    for j in range(gx):
-                        if count >= dots_per_tile:
-                            break
-                        cy = y0 + (i + 0.5) * cell_h
-                        cx = x0 + (j + 0.5) * cell_w
-                        dy = (np.random.rand() - 0.5) * 2 * jitter * cell_h
-                        dx = (np.random.rand() - 0.5) * 2 * jitter * cell_w
-                        y = int(np.clip(round(cy + dy), y0, y0 + TILE_SIZE - 1))
-                        x = int(np.clip(round(cx + dx), x0, x0 + TILE_SIZE - 1))
-
-                        # set green channel pixel
-                        rr, cc = disk((y, x), 1.5, shape=im.shape[:2])
-                        im[rr, cc, 1] = 255
-                        count += 1
+            y0, x0 = r_idx * TILE_SIZE, c_idx * TILE_SIZE
+            allele_code = int(gt[y0, x0])  # 0,1,2 for this tile
+            if allele_code == 0:
+                # no green allele here; leave tile black
+                continue
+            # clear green fill so only stipples remain
+            im[y0:y0 + TILE_SIZE, x0:x0 + TILE_SIZE, 1] = 0
+            # pick intensity based on single/double allele
+            dot_val = GREEN_DOT_INTENSITY_SINGLE if allele_code == 1 else GREEN_DOT_INTENSITY_DOUBLE
+            cell_h = TILE_SIZE / gy
+            cell_w = TILE_SIZE / gx
+            count = 0
+            for i in range(gy):
+                for j in range(gx):
+                    if count >= dots_per_tile:
+                        break
+                    cy = y0 + (i + 0.5) * cell_h
+                    cx = x0 + (j + 0.5) * cell_w
+                    dy = (np.random.rand() - 0.5) * 2 * jitter * cell_h
+                    dx = (np.random.rand() - 0.5) * 2 * jitter * cell_w
+                    y = int(np.clip(round(cy + dy), y0, y0 + TILE_SIZE - 1))
+                    x = int(np.clip(round(cx + dx), x0, x0 + TILE_SIZE - 1))
+                    # 1.5 px dot in the green channel only
+                    rr, cc = disk((y, x), 1.5, shape=im.shape[:2])
+                    im[rr, cc, 1] = dot_val
+                    count += 1
 
     return im
 
@@ -263,8 +276,9 @@ def composite_overlay(patch, ov, alpha=0.5):
         raise ValueError(f"Unsupported patch shape {patch.shape}")
     mask2d = ov.sum(axis=-1) > 0
     blended = (alpha * ov + (1 - alpha) * base).astype(np.uint8)
-    base[mask2d] = blended[mask2d]
-    return base
+    result = np.zeros_like(base)
+    result[mask2d] = blended[mask2d]
+    return result
 
 def build_channel_overlay(mask, rgb_triplet, half_inten=127, full_inten=255):
     H, W = mask.shape
@@ -306,11 +320,17 @@ def sample_and_show_pseudoimages(image, regions):
             for ch in CHANNELS:
                 # map 0/1/2 to 0/127/255 grayscale for that channel layer
                 ov = build_channel_overlay(ch_masks[ch], CHANNEL_RGB[ch])
-                if ch == "G":  # apply stippling only to green
+                if ch == "G":
+                    # Stipple onto the green overlay, but keep whole tile visible
                     ov = add_stippling_green(ch_masks[ch], ov, dots_per_tile=20, jitter=0.25)
-                coloured_patch = composite_overlay(patch, ov)  
+                    coloured_patch = composite_overlay_black_bg_tile(patch, ov, ch_masks[ch], alpha=0.5)
+                else:
+                    # For other channels: only colour pixels visible
+                    coloured_patch = composite_overlay_black_bg_tile(patch, ov, ov.sum(axis=-1) > 0, alpha=0.5)
+
+                os.makedirs(os.path.join(folder, ch), exist_ok=True)
                 Image.fromarray(coloured_patch).save(
-                    os.path.join(folder, f"{label}_patch_{j:02d}_{ch}.tiff")
+                    os.path.join(folder, ch, f"{label}_patch_{j:02d}_{ch}.tiff")
                 )
             # 3) build colour overlays for each channel and composite them
             pseudo = patch.copy()
@@ -320,8 +340,9 @@ def sample_and_show_pseudoimages(image, regions):
                     # apply stippling only to green
                     ov = add_stippling_green(ch_masks[ch], ov, dots_per_tile=20, jitter=0.25)
                 pseudo = composite_overlay(pseudo, ov, alpha=0.5)
+            os.makedirs(os.path.join(folder, "composite"), exist_ok=True)
             Image.fromarray(pseudo).save(
-                os.path.join(folder, f"{label}_patch_{j:02d}_composite.tiff"))
+                os.path.join(folder, "composite", f"{label}_patch_{j:02d}_composite.tiff"))
             axs[idx, j].imshow(pseudo)
             axs[idx, j].axis("off")
 
