@@ -17,8 +17,8 @@ import time
 # ---------------------------
 
 # Dimensions for sample (pixels), currently following Bettega's previously defined region size
-PATCH_WIDTH = 100
-PATCH_HEIGHT = 200
+PATCH_WIDTH = 500
+PATCH_HEIGHT = 1000
 # Confetti allele code: red, yellow, green, cyan, black
 ALLELES = ["R", "Y", "G", "C", "B"]
 # All possible heterzygous and homozygous allele pairs 

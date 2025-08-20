@@ -170,12 +170,38 @@ def features_for_channel(Iu8: np.ndarray) -> list[tuple[str, np.ndarray]]:
     # Entropy (local)
     for radii in (1, 2, 4, 8, 16):
         ent = entropy(I, disk(radii))
-        feats.append(("Entropy_r_{radii}", _u8_unit(_float_norm(ent))))
+        feats.append((f"Entropy_r_{radii}", _u8_unit(_float_norm(ent))))
     # Neighbors at a few radii
     for r in (1, 2, 4, 8, 16):
         feats.append((f"Neighbors_r{r}", cv2.blur(I, (r, r))))
 
     return feats
+
+def _read_mask_if_exists(img_path: Path) -> np.ndarray | None:
+    """
+    Try to read a mask image alongside `img_path`, named `mask_<basename>.<ext>`.
+    Returns uint8 2D image or None if not found/unreadable.
+    """
+    mask_path = img_path.with_name(f"mask_{img_path.stem}{img_path.suffix}")
+    if not mask_path.exists():
+        return None
+
+    m = cv2.imread(str(mask_path), cv2.IMREAD_UNCHANGED)
+    if m is None:
+        return None
+
+    # normalise to single-channel uint8
+    if m.ndim == 3:
+        # convert RGB/BGR -> gray
+        if m.shape[2] == 3:
+            m = cv2.cvtColor(m, cv2.COLOR_BGR2GRAY)
+        else:
+            m = m[:, :, 0]
+    if m.dtype == np.uint8:
+        return m
+    if m.dtype == np.uint16:
+        return (m / 257).astype(np.uint8)
+    return util.img_as_ubyte(m.astype(np.float32))
 
 # -----------------------------
 # Threshold and save
@@ -183,9 +209,18 @@ def features_for_channel(Iu8: np.ndarray) -> list[tuple[str, np.ndarray]]:
 
 def process_image(img_path: Path, out_dir: Path, channel_tag: str, pct_top: float = 14.0):
     I = read_image_u8(img_path)
+    # load mask image with sibling path
+    mask_u8 = _read_mask_if_exists(img_path)
     # base planes: original + features
     base_planes: list[np.ndarray] = []
     base_labels: list[str] = []
+    # append the base image
+    if mask_u8 is not None:
+        base_planes.append(mask_u8)
+        base_labels.append("mask")
+    else:
+        print(f"[warn] no mask for {img_path.name}")
+        return
     base_planes.append(I)
     base_labels.append("original")
 
@@ -197,12 +232,45 @@ def process_image(img_path: Path, out_dir: Path, channel_tag: str, pct_top: floa
     planes: list[np.ndarray] = []
     labels: list[str] = []
 
+    # Begin to generate the distance-mapped variant
+    for lbl, img in zip(base_labels, base_planes):
+        img_u8 = img.astype(np.uint8)
+        # 1) keep the base plane
+        planes.append(img_u8)
+        labels.append(lbl)
+
+    # Output the base stack 
+    stack = np.stack(planes, axis=0)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_name = f"Base_{img_path.stem}_Feature-stack0001.tif"
+    out_path = out_dir / out_name
+    imwrite(
+        str(out_path),
+        stack,
+        photometric="minisblack",
+        metadata={"axes": "Z", "ImageDescription": "Feature stack (split channels) without binarisation/thresholding"},
+        description="Base feature stack",
+        contiguous=True,
+    )
+    with open(out_dir / f"Base_{img_path.stem}_Feature-stack0001_labels.txt", "w") as f:
+        for i, tag in enumerate(labels, 1):
+            f.write(f"{i:03d}: {tag}\n")
+
+    # reset the output planes & labels
+    planes: list[np.ndarray] = []
+    labels: list[str] = []
+
+    # Begin to generate the distance-mapped variant
     for lbl, img in zip(base_labels, base_planes):
         img_u8 = img.astype(np.uint8)
 
         # 1) keep the base plane
         planes.append(img_u8)
         labels.append(lbl)
+
+        # If this plane is the mask we just prepend - no derivatory thresholding
+        if lbl == "mask":
+            continue
 
         # 2) make three binary planes (non-base)
         mask_p14 = percentile_binary(img_u8, pct_top=pct_top)
@@ -214,7 +282,7 @@ def process_image(img_path: Path, out_dir: Path, channel_tag: str, pct_top: floa
                        f"{lbl}_Pctl50",
                        f"{lbl}_Otsu"])
 
-        # 3) create distance maps *only from those binaries*
+        # 3) create distance maps only from those binary 
         #    (thresh-only and skeleton versions)
         dm_p14   = _dm_from_binary(mask_p14)
         dm_p50   = _dm_from_binary(mask_p50)
@@ -236,47 +304,10 @@ def process_image(img_path: Path, out_dir: Path, channel_tag: str, pct_top: floa
                        f"DM50pcSkel_{lbl}",
                        f"DMotsuSkel_{lbl}"])
 
-    # # For each base plane, add two thresholded variants (Otsu and Percentile-14%)
-    # # separate storage of base and thresholded
-    # original_planes: list[np.ndarray] = []
-    # original_labels: list[str] = []
-    # # thresholded
-    # planes: list[np.ndarray] = []
-    # labels: list[str] = []
-
-    # for lbl, img in zip(base_labels, base_planes):
-    #     # keep original plane
-    #     original_planes.append(img.astype(np.uint8))
-    #     original_labels.append(lbl)
-    #     # Otsu
-    #     planes.append(otsu_binary(img))
-    #     labels.append(f"{lbl}_Otsu")
-    #     # Percentile top-14%
-    #     planes.append(percentile_binary(img, pct_top=pct_top))
-    #     labels.append(f"{lbl}_Pctl{int(pct_top)}")
-
-    # # (Z, H, W) uint8
-    # # write base first
-    # base_stack = np.stack(original_planes, axis=0)
-    # base_out_dir = out_dir / "base"
-    # base_out_dir.mkdir(parents=True, exist_ok=True)
-    # base_out_name = f"{img_path.stem}_Feature-stack0001.tif"
-    # base_out_path = base_out_dir / base_out_name
-    # imwrite(
-    #     str(base_out_path),
-    #     base_stack,
-    #     photometric="minisblack",
-    #     metadata={"axes": "Z", "ImageDescription": "Base feature stack"},
-    #     description="Feature stack with thresholds",
-    #     contiguous=True,
-    # )
-    # with open(base_out_dir / f"{img_path.stem}_Feature-stack0001_labels.txt", "w") as f:
-    #     for i, tag in enumerate(base_labels, 1):
-    #         f.write(f"{i:03d}: {tag}\n")
-
+    # save distance map variant of stack
     stack = np.stack(planes, axis=0)
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_name = f"{img_path.stem}_Feature-stack0001.tif"
+    out_name = f"Distance_{img_path.stem}_Feature-stack0001.tif"
     out_path = out_dir / out_name
     imwrite(
         str(out_path),
@@ -286,7 +317,7 @@ def process_image(img_path: Path, out_dir: Path, channel_tag: str, pct_top: floa
         description="Feature stack with thresholds",
         contiguous=True,
     )
-    with open(out_dir / f"{img_path.stem}_Feature-stack0001_labels.txt", "w") as f:
+    with open(out_dir / f"Distance_{img_path.stem}_Feature-stack0001_labels.txt", "w") as f:
         for i, tag in enumerate(labels, 1):
             f.write(f"{i:03d}: {tag}\n")
 
