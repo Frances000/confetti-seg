@@ -332,6 +332,10 @@ def sample_and_show_pseudoimages(image, regions):
                 Image.fromarray(coloured_patch).save(
                     os.path.join(folder, ch, f"{label}_patch_{j:02d}_{ch}.tiff")
                 )
+                  # ---- SAVE MASK ----
+                mask_img = (ch_masks[ch] * 127).astype(np.uint8)  # 0/127/254 for allele count 0/1/2
+                mask_path = os.path.join(folder, ch, f"mask_{label}_patch_{j:02d}_{ch}.tiff")
+                Image.fromarray(mask_img).save(mask_path)
             # 3) build colour overlays for each channel and composite them
             pseudo = patch.copy()
             for ch in CHANNELS:
