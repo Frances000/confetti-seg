@@ -62,3 +62,6 @@ confetti-seg/02_src/threshold_stack.py
     
     Requirements:
       pip install numpy opencv-python scikit-image tifffile tqdm
+
+Once these are generated, run create_csv_stack.py on the subfolders to generate the input for training. In this project, these generated files are sent to Gadi for training. 
+
