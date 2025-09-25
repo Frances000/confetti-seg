@@ -155,7 +155,7 @@ def features_for_channel(Iu8: np.ndarray) -> list[tuple[str, np.ndarray]]:
         # Prewitt
         feats.append((f"PrewittX_s{sigma}", _u8_unit(_float_norm(prewitt_h(img)))))
         feats.append((f"PrewittY_s{sigma}", _u8_unit(_float_norm(prewitt_v(img)))))
-        # Derivatives
+            # Derivatives
         feats.append(("Derivatives_X", _u8_unit(_float_norm(sobel_h(If)))))
         feats.append(("Derivatives_Y", _u8_unit(_float_norm(sobel_v(If)))))
     # Laplacian
@@ -176,6 +176,15 @@ def features_for_channel(Iu8: np.ndarray) -> list[tuple[str, np.ndarray]]:
         feats.append((f"Neighbors_r{r}", cv2.blur(I, (r, r))))
 
     return feats
+
+# crop helper for isolating central 300x600 pixels in real images
+def central_crop(u8: np.ndarray, crop_h: int = 300, crop_w: int = 600) -> np.ndarray:
+    H, W = u8.shape[:2]
+    if crop_h > H or crop_w > W:
+        raise ValueError(f"Crop {crop_h}x{crop_w} exceeds image {H}x{W}")
+    r0 = (H - crop_h) // 2
+    c0 = (W - crop_w) // 2
+    return u8[r0:r0+crop_h, c0:c0+crop_w]
 
 def _read_mask_if_exists(img_path: Path) -> np.ndarray | None:
     """
@@ -220,7 +229,7 @@ def process_image(img_path: Path, out_dir: Path, channel_tag: str, pct_top: floa
         base_labels.append("mask")
     else:
         print(f"[warn] no mask for {img_path.name}")
-        return
+        #return
     base_planes.append(I)
     base_labels.append("original")
 

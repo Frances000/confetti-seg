@@ -17,8 +17,8 @@ import time
 # ---------------------------
 
 # Dimensions for sample (pixels), currently following Bettega's previously defined region size
-PATCH_WIDTH = 500
-PATCH_HEIGHT = 1000
+PATCH_WIDTH = 100
+PATCH_HEIGHT = 200
 # Confetti allele code: red, yellow, green, cyan, black
 ALLELES = ["R", "Y", "G", "C", "B"]
 # All possible heterzygous and homozygous allele pairs 
@@ -231,7 +231,7 @@ def add_stippling_green(gt, ov, dots_per_tile=20, jitter=0.25):
     H, W = gt.shape
     rows, cols = H // TILE_SIZE, W // TILE_SIZE
     # choose a near-square grid for dot placement cells
-    if dots_per_tile == 20:
+    if dots_per_tile == 3:
         gy, gx = 4, 5
     else:
         gy = max(1, int(np.floor(np.sqrt(dots_per_tile))))
@@ -322,7 +322,7 @@ def sample_and_show_pseudoimages(image, regions):
                 ov = build_channel_overlay(ch_masks[ch], CHANNEL_RGB[ch])
                 if ch == "G":
                     # Stipple onto the green overlay, but keep whole tile visible
-                    ov = add_stippling_green(ch_masks[ch], ov, dots_per_tile=20, jitter=0.25)
+                    ov = add_stippling_green(ch_masks[ch], ov, dots_per_tile=2, jitter=0.25)
                     coloured_patch = composite_overlay_black_bg_tile(patch, ov, ch_masks[ch], alpha=0.5)
                 else:
                     # For other channels: only colour pixels visible
