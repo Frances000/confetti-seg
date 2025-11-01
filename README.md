@@ -171,3 +171,10 @@ python3 /Users/franceskan/Documents/confetti-seg/02_src/segment_clones.py \
   --min_pixels 10 \
   --pix_size_um 0.5 \
   --core_radius 2
+
+## Stage 5: Confetti Back-Tracer GUI (Using Tkinter, Random Forest model on distance-variant features)
+Loads images named: Aa01F-145201-YYYYMMDD-merge.tif (or .tiff), extracts date from the filename and sorts ascending. Tri-panel viewer shows (t, t-1, t-2) with latest on the right. First ROI locks (W,H); later frames auto-propagate both ROIs and allow repositioning. Two regions per timepoint: Tumour (red) and Normal (green). Builds distance-variant feature planes in-memory (percentile & Otsu binaries, skeletons, distance maps) using the same logic as the user's stack generator. RandomForest (.joblib) inference over both ROIs; computes simple metrics. No CSV written unless --export_csv is provided; JSON session is always saved
+
+python 02_src/rf_backtrace_gui_distance.py \
+    --images_dir /Volumes/Lyons_X5/real_confetti_test/4NQO_stitched/Aa01F-145201-stitched_gui_test_copy \
+    --rf_model /Volumes/Lyons_X5/distance_inclusion_variation/confetti-seg-training-reduced/all_dt_models/reduced_stack_no_selection_distance_trained_models/model_distance_rf.joblib
