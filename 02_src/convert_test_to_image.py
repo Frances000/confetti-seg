@@ -363,7 +363,7 @@ def main():
         acc = float((y_hat_s == y_eval_s).mean())
 
         # consistent label list as strings (list, not ndarray)
-        # AFTER you construct y_eval_s and y_hat_s
+        # AFTER construct y_eval_s and y_hat_s
         labels_sorted = resolve_label_order(y_true_s=y_eval_s, y_pred_s=y_hat_s)
 
 
@@ -379,7 +379,6 @@ def main():
 
 
         # write report
-    # --- write report ---
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
         print(f"Model: {model_path}", file=f)
