@@ -27,6 +27,29 @@ _MODEL_KIND_PATTERNS = [
     (re.compile(r"model_distance_(rf|dt|svm|xgb)\.joblib$", re.IGNORECASE), "distance"),
 ]
 
+# --- add near top of file ---
+CLASS_ORDER_DEFAULT = [
+    "BB","BC","BG","BR","BY",
+    "CC","CG","CR","CY",
+    "GG","GR","GY",
+    "RR","RY",
+    "YY",
+]
+
+def resolve_label_order(y_true_s=None, y_pred_s=None, prefer=CLASS_ORDER_DEFAULT):
+    """Return a label list in the exact preferred order, filtered to those present.
+       Any unexpected labels not in 'prefer' are appended (stable, alpha)."""
+    present = set()
+    if y_true_s is not None:
+        present.update(np.asarray(y_true_s).astype(str))
+    if y_pred_s is not None:
+        present.update(np.asarray(y_pred_s).astype(str))
+    # keep only those that are present
+    ordered = [lab for lab in prefer if lab in present]
+    # append any extras not in the preferred list (rare)
+    extras = sorted([lab for lab in present if lab not in prefer])
+    return ordered + extras
+
 def infer_model_kind_and_tag(model_path: Path) -> tuple[str, str]:
     """
     Return ('base'|'distance', 'rf'|'dt'|'svm'|'xgb'|'unknown') from filename.
@@ -224,7 +247,7 @@ def build_palette(labels_order: np.ndarray, *, gamma_correct: bool = True) -> tu
     rgb_list: list[tuple[int, int, int]] = []
 
     for lab in labels:
-        # Treat mixtures as order-independent (e.g., 'BG' == 'GB')
+        # Treat mixtures as order independent ('BG' == 'GB')
         chars = [ch.upper() for ch in lab if ch.strip()]
         # if any unknown component, fall back to distinct HSV (handled below)
         if all(ch in CANON for ch in chars) and len(chars) >= 1:
@@ -296,11 +319,11 @@ def _augment_out_path(out_path: Path, csv_path: Path, model_kind: str, model_tag
 
 def main():
     ap = argparse.ArgumentParser(description="Evaluate a trained model on a single CSV stack and optionally write TIFF prediction maps.")
-    ap.add_argument("--model_path", required=True, help="Path to .joblib model (e.g., model_base_rf.joblib)")
+    ap.add_argument("--model_path", required=True, help="Path to .joblib model (e.g model_base_rf.joblib)")
     ap.add_argument("--csv_path",   required=True, help="Path to CSV with columns (incl. optional 'class')")
-    ap.add_argument("--shape",      default=None,  help="Image shape as HxW (e.g., 224x160). Required to write TIFFs.")
+    ap.add_argument("--shape",      default=None,  help="Image shape as HxW (e.g 224x160). Required to write TIFFs.")
     ap.add_argument("--pred_tiff",  default=None,  help="Basename for prediction TIFFs (no extension). Example: /path/patch_00_preds")
-    ap.add_argument("--out",        default=None,  help="TXT report path (default auto-annotated to include base/distance & model tag)")
+    ap.add_argument("--out",        default=None,  help="TXT report path (default autoannotated to include base/distance & model tag)")
     args = ap.parse_args()
 
     model_path = Path(args.model_path)
@@ -322,20 +345,37 @@ def main():
     X_in = align_columns_to_model(X.copy(), model)
 
     # predict
+    # predict
     y_hat = model.predict(X_in)
     n = min(len(y_hat), len(y_hat) if y is None else len(y))
     y_hat = y_hat[:n]
+
+    # --- NORMALISE PREDICTIONS (handles XGBoost numeric outputs) ---
+    # If model has a classes_ mapping and predictions are numeric, map back to label strings
+    if hasattr(model, "classes_") and np.issubdtype(np.asarray(y_hat).dtype, np.number):
+        y_hat = np.asarray(model.classes_)[y_hat]
+
     if y is not None:
-        y_eval = y[:n]
-        acc = float((y_hat == y_eval).mean())
-        labels_sorted = sorted(pd.unique(np.concatenate([y_eval, y_hat]).astype(str)))
-        cm = confusion_matrix(y_eval, y_hat, labels=labels_sorted)
-        cr = classification_report(y_eval, y_hat, zero_division=0)
+        # --- make BOTH sides strings consistently ---
+        y_eval_s = np.asarray(y[:n]).astype(str)
+        y_hat_s  = np.asarray(y_hat).astype(str)
+
+        acc = float((y_hat_s == y_eval_s).mean())
+
+        # consistent label list as strings (list, not ndarray)
+        # AFTER you construct y_eval_s and y_hat_s
+        labels_sorted = resolve_label_order(y_true_s=y_eval_s, y_pred_s=y_hat_s)
+
+
+        # all downstream metrics MUST use *_s and labels_sorted
+        cm = confusion_matrix(y_eval_s, y_hat_s, labels=labels_sorted)
+        cr = classification_report(y_eval_s, y_hat_s, labels=labels_sorted, zero_division=0)
     else:
         acc = None
-        labels_sorted = sorted(pd.unique(y_hat.astype(str)))
+        labels_sorted = np.unique(np.asarray(y_hat).astype(str)).tolist()
         cm = None
         cr = None
+
 
 
         # write report
@@ -355,7 +395,7 @@ def main():
         # -------------------------
         # Evaluation with ground truth
         # -------------------------
-        if y is not None:
+        if y_eval_s is not None:
             eval_start = time.time()
 
             # Existing summary (you already computed: n, acc, cm, cr, labels_sorted, y_hat)
@@ -367,15 +407,15 @@ def main():
 
             # Extra statistics
             try:
-                kappa = cohen_kappa_score(y, y_hat)
+                kappa = cohen_kappa_score(y_eval_s, y_hat_s)
             except Exception:
                 kappa = np.nan
             try:
-                bal_acc = balanced_accuracy_score(y, y_hat)
+                bal_acc = balanced_accuracy_score(y_eval_s, y_hat_s)
             except Exception:
                 bal_acc = np.nan
             try:
-                mcc = matthews_corrcoef(y, y_hat)
+                mcc = matthews_corrcoef(y_eval_s, y_hat_s)
             except Exception:
                 mcc = np.nan
 
@@ -383,13 +423,13 @@ def main():
             # Per-class as well (aligned to labels_sorted)
             try:
                 per_prec, per_rec, per_f1, per_sup = precision_recall_fscore_support(
-                    y, y_hat, labels=labels_sorted, average=None, zero_division=0
+                    y_eval_s, y_hat_s, labels=labels_sorted, average=None, zero_division=0
                 )
                 macro_prec, macro_rec, macro_f1, _ = precision_recall_fscore_support(
-                    y, y_hat, average="macro", zero_division=0
+                    y_eval_s, y_hat_s, average="macro", zero_division=0
                 )
                 weighted_prec, weighted_rec, weighted_f1, _ = precision_recall_fscore_support(
-                    y, y_hat, average="weighted", zero_division=0
+                    y_eval_s, y_hat_s, average="weighted", zero_division=0
                 )
             except Exception:
                 per_prec = per_rec = per_f1 = per_sup = None
@@ -458,7 +498,7 @@ def main():
             except Exception:
                 # fallback using pandas if y is not numeric sorted accordingly
                 import pandas as _pd
-                vc_true = _pd.Series(y).value_counts().sort_index()
+                vc_true = _pd.Series(y_eval_s).value_counts().sort_index()
                 true_counts = {str(k): int(v) for k, v in vc_true.items()}
 
             try:
@@ -466,7 +506,7 @@ def main():
                     np.searchsorted(labels_sorted, y_hat), minlength=len(labels_sorted)))}
             except Exception:
                 import pandas as _pd
-                vc_pred = _pd.Series(y_hat).value_counts().sort_index()
+                vc_pred = _pd.Series(y_hat_s).value_counts().sort_index()
                 pred_counts = {str(k): int(v) for k, v in vc_pred.items()}
 
             print("\nClass counts (true):", file=f)

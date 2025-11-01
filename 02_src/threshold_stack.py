@@ -17,11 +17,9 @@ def read_image_u8(path: Path) -> np.ndarray:
     img = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
     if img is None:
         raise ValueError(f"Cannot read image: {path}")
-    # If already single-channel:
     if img.ndim == 2:
         arr = img
     else:
-        # If RGB take first channel as is (no compositing).
         arr_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         arr = util.img_as_ubyte(color.rgb2gray(arr_rgb))
     # Normalise dtype to uint8
@@ -73,7 +71,7 @@ def percentile_binary(u8: np.ndarray, pct_top: float = 14.0) -> np.ndarray:
 def _dm_from_binary(mask_u8: np.ndarray) -> np.ndarray:
     # Distance to foreground (target set) like the IJ macro:
     #   invert mask so target (255) -> 0
-    #   distanceTransform gives distance to nearest zero (i.e., to target)
+    #   distanceTransform gives distance to nearest zero (i.e to target)
     #   normalise to 0..255 for compact storage
     inv = cv2.bitwise_not(mask_u8)
     dist = cv2.distanceTransform(inv, distanceType=cv2.DIST_L2, maskSize=5)
@@ -85,12 +83,12 @@ def _skeletonize_u8(mask_u8: np.ndarray) -> np.ndarray:
     return (skel.astype(np.uint8) * 255)
 
 # -----------------------------
-# Feature stack (approx TWS)
+# Feature stack (TWS)
 # -----------------------------
 
 def features_for_channel(Iu8: np.ndarray) -> list[tuple[str, np.ndarray]]:
 
-    # Compute a suite of features similar to the Trainable Weka Segmentation toggles:
+    # Compute a suite of features similar to the Trainable Weka Segmentation
     # Mean, Variance, Minimum, Maximum, Median,
     # Anisotropic diffusion (TV denoise proxy), Bilateral,
     # Lipschitz (edge magnitude proxy), Kuwahara (approx.),
@@ -134,45 +132,39 @@ def features_for_channel(Iu8: np.ndarray) -> list[tuple[str, np.ndarray]]:
     kuwahara_proxy = ((local_min.astype(np.uint16) + local_max.astype(np.uint16)) // 2).astype(np.uint8)
     feats.append(("Kuwahara", kuwahara_proxy))
     # Gabor
-    If_g = If  # avoid shadowing
+    If_g = If 
     gabor_accum = np.zeros_like(If_g)
-    for theta in (0, np.pi/4, np.pi/2, 3*np.pi/4):
-        for frequency in (0.1, 0.2, 0.4, 0.8):
-            real, imag = gabor(If_g, frequency=frequency, theta=theta)
-            gabor_accum = np.maximum(gabor_accum, np.hypot(real, imag))
-            feats.append((f"Gabor {theta} {frequency}", _u8_unit(_float_norm(gabor_accum))))
-    for sigma in (0, 1, 2, 4, 8, 16):
-        if sigma > 0:
-            img = gaussian(If, sigma=sigma, preserve_range=True)
-        else:
-            img = If
-        # Sobel
-        feats.append((f"SobelX_s{sigma}", _u8_unit(_float_norm(sobel_h(img)))))
-        feats.append((f"SobelY_s{sigma}", _u8_unit(_float_norm(sobel_v(img)))))
-        # Scharr
-        feats.append((f"ScharrX_s{sigma}", _u8_unit(_float_norm(scharr_h(img)))))
-        feats.append((f"ScharrY_s{sigma}", _u8_unit(_float_norm(scharr_v(img)))))
-        # Prewitt
-        feats.append((f"PrewittX_s{sigma}", _u8_unit(_float_norm(prewitt_h(img)))))
-        feats.append((f"PrewittY_s{sigma}", _u8_unit(_float_norm(prewitt_v(img)))))
-            # Derivatives
-        feats.append(("Derivatives_X", _u8_unit(_float_norm(sobel_h(If)))))
-        feats.append(("Derivatives_Y", _u8_unit(_float_norm(sobel_v(If)))))
+    real, imag = gabor(If_g, frequency=0.2, theta=0)
+    gabor_accum = np.maximum(gabor_accum, np.hypot(real, imag))
+    feats.append((f"Gabor {0} {0.2}", _u8_unit(_float_norm(gabor_accum))))
+    img = gaussian(If, sigma=1, preserve_range=True)
+    # Sobel
+    feats.append((f"SobelX_s{1}", _u8_unit(_float_norm(sobel_h(img)))))
+    feats.append((f"SobelY_s{1}", _u8_unit(_float_norm(sobel_v(img)))))
+    # Scharr
+    feats.append((f"ScharrX_s{1}", _u8_unit(_float_norm(scharr_h(img)))))
+    feats.append((f"ScharrY_s{1}", _u8_unit(_float_norm(scharr_v(img)))))
+    # Prewitt
+    feats.append((f"PrewittX_s{1}", _u8_unit(_float_norm(prewitt_h(img)))))
+    feats.append((f"PrewittY_s{1}", _u8_unit(_float_norm(prewitt_v(img)))))
+    # Derivatives
+    feats.append(("Derivatives_X", _u8_unit(_float_norm(sobel_h(If)))))
+    feats.append(("Derivatives_Y", _u8_unit(_float_norm(sobel_v(If)))))
     # Laplacian
-    for ksize in (3, 5, 7):
-        lap = cv2.Laplacian(I, cv2.CV_16S, ksize=ksize)
-        feats.append(("Laplacian", cv2.convertScaleAbs(lap)))
+    ksize=3
+    lap = cv2.Laplacian(I, cv2.CV_16S, ksize=ksize)
+    feats.append(("Laplacian", cv2.convertScaleAbs(lap)))
     # Structure tensor eigenvalues
     A_elems = feature.structure_tensor(If, sigma=1.0)
     l1, l2 = feature.structure_tensor_eigenvalues(A_elems)
     feats.append(("Structure_lambda1", _u8_unit(_float_norm(l1))))
     feats.append(("Structure_lambda2", _u8_unit(_float_norm(l2))))
     # Entropy (local)
-    for radii in (1, 2, 4, 8, 16):
-        ent = entropy(I, disk(radii))
-        feats.append((f"Entropy_r_{radii}", _u8_unit(_float_norm(ent))))
+    radii=4
+    ent = entropy(I, disk(radii))
+    feats.append((f"Entropy_r_{radii}", _u8_unit(_float_norm(ent))))
     # Neighbors at a few radii
-    for r in (1, 2, 4, 8, 16):
+    for r in (8, 16):
         feats.append((f"Neighbors_r{r}", cv2.blur(I, (r, r))))
 
     return feats

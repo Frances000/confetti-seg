@@ -1,34 +1,26 @@
 #!/usr/bin/env python3
 """
-Track Confetti clones across a time series AND visualize them (overlays + growth curves).
+Track Confetti clones across a time series, visualize them (overlays + growth curves).
 
 Usage examples
 --------------
 # 1) Track only
 python track_and_visualize_confetti.py \
   --labels t0_labels.tif t1_labels.tif t2_labels.tif \
-  --intensity t0_composite.tif t1_composite.tif t2_composite.tif \
   --out_dir /path/to/ts_output
 
 # 2) Visualize only (re-using existing tracks.csv)
 python track_and_visualize_confetti.py \
   --viz_only \
   --labels t0_labels.tif t1_labels.tif t2_labels.tif \
-  --intensity t0_composite.tif t1_composite.tif t2_composite.tif \
   --tracks_csv /path/to/ts_output/tracks.csv \
   --out_dir /path/to/ts_output
 
 # 3) Track + visualize in one go (default)
 python track_and_visualize_confetti.py \
   --labels t0_labels.tif t1_labels.tif t2_labels.tif \
-  --intensity t0_composite.tif t1_composite.tif t2_composite.tif \
   --out_dir /path/to/ts_output
 
-Notes
------
-- If you don't have intensity frames, omit --intensity. The script will use labels for translation
-  estimation and skip optical flow unless you keep it on (works for mild motion).
-- Overlays are written to <out_dir>/overlays/overlay_tXX.tif and growth_curves.png to <out_dir>.
 """
 from __future__ import annotations
 import argparse
@@ -198,7 +190,7 @@ def track_time_series(label_paths: List[Path],
         clones_w = extract_clones(L0w.astype(L0.dtype))
         clones_1 = extract_clones(L1)
 
-        # carry track ids from previous set to warped set via nearest-centroid (cheap & ok)
+        # carry track ids from previous set to warped set via nearest-centroid
         from scipy.spatial import cKDTree
         if clones_t:
             XY_prev = np.array([[c["centroid_r"], c["centroid_c"]] for c in clones_t], dtype=np.float32)

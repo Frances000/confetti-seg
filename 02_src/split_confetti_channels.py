@@ -9,7 +9,7 @@ from tifffile import TiffFile, imwrite
 
 CANON = {"C","R","G","Y","BF"}  # BF = brightfield/gray/composite-ish
 
-def central_crop(arr2d: np.ndarray, crop_h: int = 300, crop_w: int = 600) -> np.ndarray:
+def central_crop(arr2d: np.ndarray, crop_h: int = 500, crop_w: int = 600) -> np.ndarray:
     H, W = arr2d.shape[:2]
     if crop_h > H or crop_w > W:
         raise ValueError(f"Crop {crop_h}x{crop_w} exceeds image {H}x{W}")

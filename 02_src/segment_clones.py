@@ -123,6 +123,7 @@ def analyze(label_img: np.ndarray,
 
         # Connected clones within this class
         lab = cc_label(cls_mask, connectivity=2)
+        # sci kit image implementation of removing objects below the threshold for min pixel count
         lab = remove_small_objects(lab, min_size=min_pixels)
         # Per-class colour for overlay (from legend if available)
         rgb = (0, 255, 255)

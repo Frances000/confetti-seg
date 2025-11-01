@@ -25,7 +25,12 @@ from typing import Dict, List, Tuple, Optional
 
 import numpy as np
 import pandas as pd
-from tifffile import imread
+from tifffile import imread, TiffFile
+
+def _skip_key(key: str) -> bool:
+    # Skip keys that start with "mask_" (case-insensitive).
+    # Extend this if you want to skip other patterns.
+    return key.lower().startswith("mask_")
 
 CHANNELS = ["C", "G", "R", "Y"]
 CHANNEL_LONG = {"C": "cyan", "G": "green", "R": "red", "Y": "yellow"}
@@ -39,26 +44,38 @@ def _mask_index(labels: list[str]) -> int | None:
     return lower.index("mask") if "mask" in lower else None
 
 
-def _nearest_allele_count(u8: np.ndarray) -> np.ndarray:
+# def _nearest_allele_count(u8: np.ndarray) -> np.ndarray:
+#     """
+#     Map uint8 mask plane to {0,1,2} by nearest of {0,127,255}. Treat 254 as 255.
+#     """
+#     u = u8.astype(np.uint8).copy()
+#     u[u == 254] = 255
+#     ref = np.array([0, 127, 255], dtype=np.float32).reshape(3, 1, 1)
+#     diffs = np.abs(u.astype(np.float32)[None, ...] - ref)
+#     idx = np.argmin(diffs, axis=0)  # 0,1,2
+#     return idx.astype(np.uint8)
+
+def _nearest_allele_count(u8_2d: np.ndarray) -> np.ndarray:
     """
-    Map uint8 mask plane to {0,1,2} by nearest of {0,127,255}. Treat 254 as 255.
+    Expect a 2-D uint8 plane; map intensities to {0,1,2} by nearest of {0,127,255}.
+    Treat 254 as 255.
     """
-    u = u8.astype(np.uint8).copy()
+    u = u8_2d.astype(np.uint8, copy=True)
     u[u == 254] = 255
-    ref = np.array([0, 127, 255], dtype=np.float32).reshape(3, 1, 1)
-    diffs = np.abs(u.astype(np.float32)[None, ...] - ref)
-    idx = np.argmin(diffs, axis=0)  # 0,1,2
-    return idx.astype(np.uint8)
+    ref = np.array([0, 127, 255], dtype=np.float32)[:, None, None]  # (3,1,1)
+    diffs = np.abs(u.astype(np.float32)[None, ...] - ref)           # (3,H,W)
+    return diffs.argmin(axis=0).astype(np.uint8)                     # (H,W)
 
 def _load_stack_and_labels(stack_path: Path) -> Tuple[np.ndarray, List[str]]:
     """
-    Read (Z,H,W) stack and optional labels file (same stem + '_labels.txt').
-    If labels missing/mismatch, synthesise labels 'slice_01..'.
+    Read stack and labels, returning (Z,H,W) and a Z-length label list.
     """
-    stack = imread(stack_path)  # (Z,H,W)
+    with TiffFile(str(stack_path)) as tf:
+        stack_raw = tf.series[0].asarray()
+    stack = _to_ZHW(stack_raw)  # (Z,H,W)
     Z = stack.shape[0]
+
     lab_path = stack_path.with_name(stack_path.stem + "_labels.txt")
-    labels: List[str]
     if lab_path.exists():
         with open(lab_path, "r") as f:
             labels = [ln.strip().split(": ", 1)[-1] for ln in f if ln.strip()]
@@ -103,6 +120,34 @@ def _discover_patch_groups_base(root: Path) -> Dict[str, Dict[str, Path]]:
                 ch_tag = ch  # trust folder
             groups.setdefault(key, {})[ch_tag] = p
     return groups
+
+def _to_ZHW(arr: np.ndarray) -> np.ndarray:
+    """
+    Coerce arbitrary TIFF array to (Z,H,W):
+      - squeeze singleton axes
+      - if 2D, treat as single-slice stack (1,H,W)
+      - if 3D and one axis looks like channels/slices (<=32), put it as Z
+      - if 3D and looks like (H,W,Z), move Z to front
+    """
+    a = np.squeeze(arr)
+    if a.ndim == 2:
+        return a[None, ...]  # (1,H,W)
+    if a.ndim == 3:
+        # Heuristics: pick the axis that is NOT clearly spatial.
+        H, W = sorted(a.shape)[-2:]  # largest two are likely spatial
+        # If last axis is small (channels/features), move it to front
+        if a.shape[-1] <= 32 and a.shape[-2] == H and a.shape[-3] == W:
+            return np.moveaxis(a, -1, 0)  # (Z,H,W)
+        # If first axis is small, assume already (Z,H,W)
+        if a.shape[0] <= 512 and a.shape[1] == H and a.shape[2] == W:
+            return a  # (Z,H,W)
+        # If looks like (H,W,Z), move Z to front
+        if a.shape[0] == H and a.shape[1] == W:
+            return np.moveaxis(a, -1, 0)
+        # Fallback: pick the smallest axis as Z
+        z_axis = int(np.argmin(a.shape))
+        return np.moveaxis(a, z_axis, 0)
+    raise ValueError(f"Unsupported TIFF array with ndim={a.ndim} and shape {a.shape}")
 
 def _discover_patch_groups_distance(root: Path) -> Dict[str, Dict[str, Path]]:
     """
@@ -150,27 +195,32 @@ def _colname_for(label: str, ch: str) -> Optional[str]:
 
 def _compose_class_from_masks(masks_by_ch: Dict[str, np.ndarray]) -> np.ndarray:
     """Vectorised class string assembly from per-channel mask planes."""
-    # Determine common H,W (crop to min across channels)
-    H = min(m.shape[0] for m in masks_by_ch.values())
-    W = min(m.shape[1] for m in masks_by_ch.values())
+    # Harmonise spatial size from available masks (use last two dims)
+    H = min(np.squeeze(m).shape[-2] for m in masks_by_ch.values())
+    W = min(np.squeeze(m).shape[-1] for m in masks_by_ch.values())
     N = H * W
     cls = np.array([""] * N, dtype=object)
 
     for ch in CHANNELS:
         if ch not in masks_by_ch:
             continue
-        counts = _nearest_allele_count(masks_by_ch[ch][:H, :W])
-        # vectorised expansion: "", "G", "GG" etc.
+        u = np.squeeze(masks_by_ch[ch])[..., :H, :W]  # crop on last axes
+        # If still (K,H,W), reduce to a single plane (max is robust for masks)
+        if u.ndim == 3:
+            u = u.max(axis=0)
+        if u.ndim != 2:
+            raise ValueError(f"Mask for channel {ch} is not 2-D after squeeze; got {u.shape}")
+        counts = _nearest_allele_count(u)
         add = np.where(counts == 0, "", np.where(counts == 1, ch, ch + ch)).reshape(-1)
         cls = np.char.add(cls, add.astype(object))
 
-    # normalise to exactly 2 letters: pad with 'B', alphabetise, truncate if >2
     def _norm(s: str) -> str:
         if len(s) < 2:
             s = s + "B" * (2 - len(s))
         s = "".join(sorted(s))
         return s[:2]
     return np.vectorize(_norm, otypes=[object])(cls)
+
 
 # --------------------------
 # Main composer
@@ -183,6 +233,9 @@ def compose_csvs_base(root: Path, out_dir: Path, *, mode: str = "infer") -> None
         return
 
     for key, per_ch in groups.items():
+        if _skip_key(key):
+            print(f"[SKIP] {key}: suppressed (mask_* key)")
+            continue
         stacks: dict[str, np.ndarray] = {}
         labels: dict[str, list[str]] = {}
         masks: dict[str, np.ndarray] = {}
@@ -194,9 +247,11 @@ def compose_csvs_base(root: Path, out_dir: Path, *, mode: str = "infer") -> None
             stacks[ch], labels[ch] = stk, lab
             mi = _mask_index(lab)
             if mi is None:
-                missing_any_mask = True
-            else:
-                masks[ch] = stk[mi]
+                # heuristic: treat slice 0 as mask if it’s binary-looking
+                u = stk[0]
+                if np.unique(u).size <= 3:  # e.g., {0,127,255}
+                    mi = 0
+            masks[ch] = stk[mi]
 
         if mode == "train" and (missing_any_mask or len(masks) != len(per_ch)):
             raise RuntimeError(f"[{key}] Missing 'mask' slice in at least one channel (train mode).")
@@ -242,6 +297,9 @@ def compose_csvs_distance(root: Path, out_dir: Path, *, mode: str = "infer") -> 
         return
 
     for key, per_ch in groups.items():
+        if _skip_key(key):
+            print(f"[SKIP] {key}: suppressed (mask_* key)")
+            continue
         stacks: dict[str, np.ndarray] = {}
         labels: dict[str, list[str]] = {}
         masks: dict[str, np.ndarray] = {}
@@ -252,9 +310,11 @@ def compose_csvs_distance(root: Path, out_dir: Path, *, mode: str = "infer") -> 
             stacks[ch], labels[ch] = stk, lab
             mi = _mask_index(lab)
             if mi is None:
-                missing_any_mask = True
-            else:
-                masks[ch] = stk[mi]
+                # heuristic: treat slice 0 as mask if it’s binary-looking
+                u = stk[0]
+                if np.unique(u).size <= 3:  # e.g., {0,127,255}
+                    mi = 0
+            masks[ch] = stk[mi]
 
         if mode == "train" and (missing_any_mask or len(masks) != len(per_ch)):
             raise RuntimeError(f"[{key}] Missing 'mask' slice in at least one channel (train mode).")
