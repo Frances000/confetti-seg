@@ -4,6 +4,10 @@ Author: Frances Kan (fkan0396)
 This repository stores the code for a Python machine learning segmentation pipeline. The main files cover a workflow for image selection, 
 feature generation, and distance map incorporation. 
 
+## Stage 0:
+Activate virtual environment in terminal:
+source confetti-seg/bin/activate
+
 # Pipeline Workflow
 ## Stage 1: Pseudoimage Generation
 1. Starting with an initial brightfeld image, regions of interest are selected for generation of pseudoimages. Run "python3 gui_tongue_roi.py", and exit once the selection is complete. 
